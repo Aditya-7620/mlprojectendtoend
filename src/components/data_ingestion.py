@@ -1,67 +1,75 @@
 import os
-import os.path
 import sys
-import logging
-from src.exception import CustomException
-from src.logger import logging as logger  # Assuming this returns a logger instance
-import pandas as pd
-from sklearn.model_selection import train_test_split
 from dataclasses import dataclass
 
-from src.components.data_transformation import DataTransformation
-from src.components.data_transformation import DataTransformationConfig
+from catboost import CatBoostRegressor
+from sklearn.ensemble import AdaBoostRegressor, GradientBoostingRegressor, RandomForestRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+from sklearn.neighbors import KNeighborsRegressor
+from sklearn.tree import DecisionTreeRegressor
+from xgboost import XGBRegressor
+
+from src.exception import CustomException
+from src.logger import logging
+from src.utils import save_object, evaluate_models
+
 
 @dataclass
-class DataIngestionConfig:
-    train_data_path: str = os.path.join('artifacts', "train.csv")
-    test_data_path: str = os.path.join('artifacts', "test.csv")
-    raw_data_path: str = os.path.join('artifacts', "data.csv")
+class ModelTrainerConfig:
+    trained_model_file_path: str = os.path.join("artifacts", "model.pkl")
 
 
-class DataIngestion:
+class ModelTrainer:
     def __init__(self):
-        self.ingestion_config = DataIngestionConfig()
-        self.raw_data_path = None  # Store raw data path for return
+        self.model_trainer_config = ModelTrainerConfig()
 
-    def initiate_data_ingestion(self):
-        logger.info("Entered the data ingestion method/component")
+    def initiate_model_trainer(self, train_array, test_array, preprocessor_path):
         try:
-            # Read the dataset
-            df = pd.read_csv('notebook/stud (1).csv')  # Fixed path separator
-            logger.info("Dataset read as DataFrame successfully")
-            
-            # Create artifacts directory and save raw data
-            os.makedirs(os.path.dirname(self.ingestion_config.train_data_path), exist_ok=True)
-            df.to_csv(self.ingestion_config.raw_data_path, index=False, header=True)
-            self.raw_data_path = self.ingestion_config.raw_data_path
-            logger.info(f"Raw data saved to: {self.ingestion_config.raw_data_path}")
+            logging.info("Split training and test input data")
 
-            # Train-test split (Fixed: was logging string instead of actual call)
-            logger.info("Performing train-test split (test_size=0.2, random_state=42)")
-            train_set, test_set = train_test_split(df, test_size=0.2, random_state=42)
-            
-            # Save train and test sets (Fixed: test_set was getting train_set)
-            train_set.to_csv(self.ingestion_config.train_data_path, index=False, header=True)
-            test_set.to_csv(self.ingestion_config.test_data_path, index=False, header=True)  # Fixed
-            
-            logger.info(f"Data ingestion completed successfully. Train: {len(train_set)}, Test: {len(test_set)}")
-            
-            # Return paths
-            return (
-                self.ingestion_config.train_data_path,
-                self.ingestion_config.test_data_path,
-                self.ingestion_config.raw_data_path  # Added raw data path
+            x_train, y_train = train_array[:, :-1], train_array[:, -1]
+            x_test, y_test = test_array[:, :-1], test_array[:, -1]
+
+            models = {
+                "Random Forest": RandomForestRegressor(),
+                "Decision Tree": DecisionTreeRegressor(),
+                "Gradient Boosting": GradientBoostingRegressor(),
+                "Linear Regression": LinearRegression(),
+                "K-Neighbors Regressor": KNeighborsRegressor(),
+                "XGBRegressor": XGBRegressor(),
+                "CatBoost Regressor": CatBoostRegressor(verbose=False),
+                "AdaBoost Regressor": AdaBoostRegressor(),
+            }
+
+            model_report = evaluate_models(
+                x_train=x_train,
+                y_train=y_train,
+                x_test=x_test,
+                y_test=y_test,
+                models=models,
             )
-            
+
+            best_model_score = max(model_report.values())
+            best_model_name = max(model_report, key=model_report.get)
+            best_model = models[best_model_name]
+
+            if best_model_score < 0.6:
+                raise CustomException("No best model found", sys)
+
+            logging.info("Best model found on both training and testing dataset")
+
+            best_model.fit(x_train, y_train)
+
+            save_object(
+                file_path=self.model_trainer_config.trained_model_file_path,
+                obj=best_model
+            )
+
+            predicted = best_model.predict(x_test)
+            r2_square = r2_score(y_test, predicted)
+
+            return r2_square
+
         except Exception as e:
-            logger.error(f"Data ingestion failed: {str(e)}", exc_info=True)
-            raise CustomException(e, sys) from e  # Fixed: proper exception chaining
-
-
-if __name__ == "__main__":
-    obj = DataIngestion()
-    train_data, test_data, data = obj.initiate_data_ingestion()  # Fixed return handling
-    
-
-    data_transformation = DataTransformation()
-    data_transformation.initiate_data_transformation(train_data,test_data)
+            raise CustomException(e, sys)
